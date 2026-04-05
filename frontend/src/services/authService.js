@@ -1,4 +1,8 @@
-const API_URL = '/api/auth';
+const BASE_URL = (typeof window !== 'undefined' && window.env && window.env.REACT_APP_API_URL) 
+  || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL)
+  || 'http://localhost:4000/api';
+
+const API_URL = `${BASE_URL}/auth`;
 
 // Session-based user information
 let currentUser = null;
