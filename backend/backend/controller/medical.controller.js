@@ -1,0 +1,261 @@
+import { Client } from 'whatsapp-web.js';
+import ScanReport from "../models/ScanReport.model.js";
+
+// Initialize WhatsApp client
+const clientWhatsapp = new Client();
+
+// Initialize WhatsApp connection
+clientWhatsapp.initialize();
+
+clientWhatsapp.on('qr', (qr) => {
+    console.log('QR RECEIVED', qr);
+});
+
+clientWhatsapp.on('ready', () => {
+    console.log('Client is ready!');
+});
+
+// Controller for handling scan report operations
+export const createScanReport = async (req, res) => {
+  try {
+    const { patientName, scanType, predictions, images, phoneNumber } = req.body;
+
+    // Basic validation
+    if (!patientName || !scanType) {
+      return res.status(400).json({
+        success: false,
+        message: "Patient name and scan type are required",
+      });
+    }
+
+    // Get userId from session or authenticated user
+    const userId = req.session.userId || (req.user && req.user._id);
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in again.",
+      });
+    }
+
+    // Map scan types to valid enum values but preserve original name
+    let validScanType = scanType;
+    let originalScanType = scanType; // Store the original scan type name
+
+    // Case-insensitive matching for scan types
+    const normalizedScanType = scanType.trim().toLowerCase();
+
+    if (normalizedScanType === "bone tissue scan") {
+      validScanType = "CT scan"; // Map to valid enum for database
+    } else if (normalizedScanType === "brain tumor scan") {
+      validScanType = "MRI scan"; // Map to valid enum for database
+    }
+
+    // Create a new scan report with user ID
+    const newScanReport = new ScanReport({
+      patientName,
+      scanType: validScanType,
+      originalScanType,
+      predictions: predictions || [],
+      images: images || [],
+      userId: userId, // Use the user ID from session
+      phoneNumber
+    });
+
+    // Save to database
+    await newScanReport.save();
+    console.log(`Created new scan report for user ${userId} with ID ${newScanReport._id}`);
+
+    res.status(201).json({
+      success: true,
+      message: "Scan report saved successfully",
+      reportId: newScanReport._id,
+      report: newScanReport,
+    });
+  } catch (error) {
+    console.error("Error saving scan report:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to save scan report",
+      error: error.message,
+    });
+  }
+};
+
+// Get all scan reports
+export const getAllScanReports = async (req, res) => {
+  try {
+    // Get userId from session or authenticated user
+    const userId = req.session.userId || (req.user && req.user._id);
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required. Please log in again.",
+      });
+    }
+
+    // Query reports filtered by userId - ensure proper MongoDB ObjectId comparison
+    const reports = await ScanReport.find({ userId: userId.toString() }).sort({ timestamp: -1 });
+    console.log(`Fetched ${reports.length} reports for user ${userId}`);
+
+    // Transform data to match frontend expectations with focus on key information
+    const formattedReports = reports.map((report) => {
+      // Generate colors based on scan type
+      const colorMap = {
+        "CT scan": "from-cyan-500 to-blue-500", // Used for bone tissue scan
+        "MRI scan": "from-purple-500 to-indigo-500", // Used for Brain Tumor scan
+        default: "from-rose-400 to-red-500",
+      };
+
+      const color = colorMap[report.scanType] || colorMap.default;
+
+      // Format date
+      const date = new Date(report.timestamp).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+
+      // Get primary finding (tumor type) from predictions
+      const tumorType =
+        report.predictions && report.predictions.length > 0
+          ? report.predictions[0]
+          : "No findings";
+
+      // Use original scan type name if available, otherwise use a display name based on the enum value
+      let displayName = report.originalScanType || report.scanType;
+      if (!report.originalScanType) {
+        if (report.scanType === "CT scan") displayName = "bone tissue scan";
+        else if (report.scanType === "MRI scan")
+          displayName = "Brain Tumor scan";
+      }
+
+      return {
+        id: report._id,
+        name: displayName, // Use display name instead of internal enum
+        color: color,
+        description: tumorType,
+        date: date,
+        status: "Completed",
+        patient: report.patientName,
+        predictions: report.predictions,  // Include the full predictions array
+        doctor: "Dr. Assigned",
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      count: reports.length,
+      reports: formattedReports,
+    });
+  } catch (error) {
+    console.error("Error fetching scan reports:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch scan reports",
+      error: error.message,
+    });
+  }
+};
+
+// Get a specific scan report by ID
+export const getScanReportById = async (req, res) => {
+  try {
+    const reportId = req.params.id;
+
+    const report = await ScanReport.findById(reportId);
+
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        message: "Scan report not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      report,
+    });
+  } catch (error) {
+    console.error("Error fetching scan report:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch scan report",
+      error: error.message,
+    });
+  }
+};
+
+// Get images for a specific scan report
+export const getScanReportImages = async (req, res) => {
+  try {
+    const reportId = req.params.id;
+
+    const report = await ScanReport.findById(reportId);
+
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        message: "Scan report not found",
+      });
+    }
+
+    // Format image paths to be the full URL to the Python backend
+    const imagePaths = report.images.map(
+      (filename) => `http://127.0.0.1:5000/uploads/${filename}`
+    );
+
+    // Return the images array from the report
+    res.status(200).json({
+      success: true,
+      images: imagePaths,
+      reportDetails: {
+        id: report._id,
+        patientName: report.patientName,
+        scanType: report.scanType,
+        predictions: report.predictions,
+        date: report.timestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching scan report images:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch scan report images",
+      error: error.message,
+    });
+  }
+};
+
+export const sendMessage = async (req, res) => {
+    try {
+        const { number, name, scanType, imageUrl } = req.body;
+        await sendWhatsApp(number, name, scanType, imageUrl);
+        return res.status(200).json({ success: true, message: "Message sent successfully" });
+    } catch (error) {
+        console.error("Error sending WhatsApp message:", error);
+        return res.status(500).json({ 
+            success: false, 
+            message: "Failed to send WhatsApp message",
+            error: error.message 
+        });
+    }
+};
+
+const sendWhatsApp = async (number, name, scanType, imageUrl) => {
+    const recipientId = `91${number}@c.us`;
+    const message = `Hi ${name}, your report is ready`;
+    
+    try {
+        await clientWhatsapp.sendMessage(recipientId, message);
+        await clientWhatsapp.sendMessage(recipientId, {
+            media: imageUrl,
+            caption: `Scan Type: ${scanType}`
+        });
+        console.log("Message and image sent successfully");
+    } catch (error) {
+        console.error("Error sending WhatsApp message:", error);
+        throw error;
+    }
+};
